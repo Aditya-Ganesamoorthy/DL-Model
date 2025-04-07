@@ -1,0 +1,90 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Gas Emission Threshold Prediction</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+    <style>
+        .plot-img {
+            max-width: 100%;
+            margin: 20px 0;
+        }
+        .metrics-box {
+            padding: 20px;
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="my-4">Gas Emission Threshold Prediction System</h1>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="row">
+            <div class="col-md-8">
+                <h3>Exploratory Data Analysis</h3>
+                {% if plot_paths %}
+                    {% for plot in plot_paths %}
+                    <img src="{{ url_for('static', filename=plot.split('/')[-1]) }}">
+
+                    {% endfor %}
+                {% else %}
+                    <p>No data available for EDA</p>
+                {% endif %}
+            </div>
+
+            <div class="col-md-4">
+                <div class="metrics-box">
+                    <h4>Model Performance</h4>
+                    {% if model_trained %}
+                        <p>MAE: {{ "%.2f"|format(mae) }}</p>
+                        <p>RMSE: {{ "%.2f"|format(rmse) }}</p>
+                    {% else %}
+                        <p>Model not trained - insufficient data</p>
+                    {% endif %}
+                </div>
+
+                <h3 class="mt-4">Make Prediction</h3>
+                <form method="POST">
+                    <div class="form-group">
+                        <label>Location</label>
+                        <input type="text" class="form-control" name="location" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Temperature</label>
+                        <input type="number" step="0.01" class="form-control" name="temperature" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Gas Emission Value</label>
+                        <input type="number" step="0.01" class="form-control" name="gas_emission" required>
+                    </div>
+                    {% if predicted_threshold is not none and analog_value is not none %}
+  <div class="alert alert-success mt-4">
+    <h4>📊 Prediction Results</h4>
+    <ul>
+      <li><strong>Predicted Threshold:</strong> {{ predicted_threshold }}</li>
+      <li><strong>Analog Value:</strong> {{ analog_value }}</li>
+      <li><strong>Location:</strong> {{ location }}</li>
+      <li><strong>Temperature:</strong> {{ temperature }}</li>
+      <li><strong>Gas Emission Value:</strong> {{ gas_emission }}</li>
+    </ul>
+  </div>
+{% endif %}
+
+
+                    <button type="submit" class="btn btn-primary">Predict and Save</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
