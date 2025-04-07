@@ -1,3 +1,4 @@
+from flask import Flask, render_template, request, redirect, url_for, flash
 import pandas as pd
 import pymongo
 from sklearn.model_selection import train_test_split
@@ -5,9 +6,14 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from datetime import datetime
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend for matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
-import streamlit as st
+import os
+
+app = Flask(__name__)
+app.secret_key = 'your_secret_key_here'
 
 # MongoDB Configuration
 MONGO_URI = "mongodb+srv://vgugan16:gugan2004@cluster0.qyh1fuo.mongodb.net/dL?retryWrites=true&w=majority&appName=Cluster0"
@@ -22,34 +28,50 @@ readings_collection = db[READINGS_COLLECTION]
 mean_values_collection = db[MEAN_VALUES_COLLECTION]
 
 def run_eda(df):
+    plot_paths = []
+    
     if df.empty:
-        st.warning("No data available for EDA.")
-        return
+        return plot_paths
 
-    st.subheader("EDA: Emission Threshold Insights")
+    # Create static directory if not exists
+    static_dir = os.path.join(app.root_path, 'static')
+    if not os.path.exists(static_dir):
+        os.makedirs(static_dir)
 
-    st.write("### Threshold vs Gas Emission Value")
-    fig1, ax1 = plt.subplots()
-    sns.scatterplot(data=df, x="Gas Emission Value", y="Threshold", hue="Location", ax=ax1)
-    st.pyplot(fig1)
+    # Plot 1: Threshold vs Gas Emission Value
+    plt.figure()
+    sns.scatterplot(data=df, x="Gas Emission Value", y="Threshold", hue="Location")
+    plot1_filename = 'plot1.png'
+    plt.savefig(os.path.join(static_dir, plot1_filename))
+    plt.close()
+    plot_paths.append(plot1_filename)
 
-    st.write("### Average Threshold per Location")
+    # Plot 2: Average Threshold per Location
+    plt.figure()
     mean_by_location = df.groupby("Location")["Threshold"].mean().reset_index()
-    fig2, ax2 = plt.subplots()
-    sns.barplot(data=mean_by_location, x="Location", y="Threshold", ax=ax2)
+    sns.barplot(data=mean_by_location, x="Location", y="Threshold")
     plt.xticks(rotation=45)
-    st.pyplot(fig2)
+    plot2_filename = 'plot2.png'
+    plt.savefig(os.path.join(static_dir, plot2_filename))
+    plt.close()
+    plot_paths.append(plot2_filename)
 
-    st.write("### Time Series of Daily Mean Values")
+    # Plot 3: Time Series of Daily Mean Values
+    plt.figure()
     df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+    df = df.dropna(subset=['Timestamp'])
+    df['Date'] = df['Timestamp'].dt.date
     daily_mean = df.groupby('Date')[['Threshold', 'Gas Emission Value']].mean().reset_index()
     daily_mean['Date'] = pd.to_datetime(daily_mean['Date'])
+    daily_mean.plot(x='Date', y=['Threshold', 'Gas Emission Value'], title="Daily Averages")
+    plt.ylabel("Value")
+    plt.grid(True)
+    plot3_filename = 'plot3.png'
+    plt.savefig(os.path.join(static_dir, plot3_filename))
+    plt.close()
+    plot_paths.append(plot3_filename)
 
-    fig3, ax3 = plt.subplots()
-    daily_mean.plot(x='Date', y=['Threshold', 'Gas Emission Value'], ax=ax3, title="Daily Averages")
-    ax3.set_ylabel("Value")
-    ax3.grid(True)
-    st.pyplot(fig3)
+    return plot_paths
 
 def load_or_initialize_data():
     cursor = readings_collection.find({}, {'_id': 0})
@@ -61,7 +83,8 @@ def load_or_initialize_data():
         df = df.dropna(subset=['Timestamp'])
         df['Date'] = df['Timestamp'].dt.date.astype(str)
     else:
-        df = pd.DataFrame(columns=["Location", "Temperature", "Gas Emission Value", "Threshold", "Analog", "Timestamp", "Date"])
+        df = pd.DataFrame(columns=["Location", "Temperature", "Gas Emission Value", 
+                                  "Threshold", "Analog", "Timestamp", "Date"])
 
     df['Location'] = df['Location'].fillna("Unknown")
     return df
@@ -89,16 +112,10 @@ def train_model(df, label_encoder):
             y_pred = model.predict(X_test)
             mae = mean_absolute_error(y_test, y_pred)
             rmse = mean_squared_error(y_test, y_pred) ** 0.5
-            st.success(f"Model Metrics:\nMAE: {mae:.2f}\nRMSE: {rmse:.2f}")
-
-            return model
-
-        except ValueError as e:
-            st.error(f"Model training error: {e}")
-            return None
-
-    st.warning("Insufficient data for model training")
-    return None
+            return model, mae, rmse
+        except ValueError:
+            return None, None, None
+    return None, None, None
 
 def save_mean_values():
     df = load_or_initialize_data()
@@ -116,60 +133,78 @@ def save_mean_values():
                 {"$set": record},
                 upsert=True
             )
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    df = load_or_initialize_data()
+    plot_paths = run_eda(df)
+    label_encoder = handle_location_encoding(df)
+    model, mae, rmse = train_model(df, label_encoder)
 
-        st.success("Daily mean values saved to MongoDB successfully!")
+    predicted_threshold = None
+    analog_value = None
 
-# Streamlit UI
-df = load_or_initialize_data()
-run_eda(df)
-label_encoder = handle_location_encoding(df)
-model = train_model(df, label_encoder)
-st.title("Gas Emission Threshold Prediction System")
-
-st.markdown("Enter data to predict threshold and store results.")
-
-location = st.text_input("Location", value="Unknown")
-temperature = st.number_input("Temperature", format="%.2f")
-gas_emission = st.number_input("Gas Emission Value", format="%.2f")
-
-if st.button("Predict and Save"):
-    try:
+    if request.method == 'POST':
         try:
-            location_encoded = label_encoder.transform([location])[0]
-        except ValueError:
-            new_classes = list(label_encoder.classes_) + [location]
-            label_encoder.fit(new_classes)
-            location_encoded = label_encoder.transform([location])[0]
+            location = request.form.get('location', 'Unknown')
+            temperature = float(request.form.get('temperature', 0))
+            gas_emission = float(request.form.get('gas_emission', 0))
 
-        if model:
-            user_input = pd.DataFrame([{
-                "Location_Encoded": location_encoded,
+            try:
+                location_encoded = label_encoder.transform([location])[0]
+            except ValueError:
+                new_classes = list(label_encoder.classes_) + [location]
+                label_encoder.fit(new_classes)
+                location_encoded = label_encoder.transform([location])[0]
+
+            if model:
+                user_input = pd.DataFrame([{
+                    "Location_Encoded": location_encoded,
+                    "Temperature": temperature,
+                    "Gas Emission Value": gas_emission
+                }])
+                predicted_threshold = model.predict(user_input)[0]
+            else:
+                predicted_threshold = gas_emission * 1.1
+
+            analog_value = 1 if gas_emission > predicted_threshold else 0
+
+            current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            new_entry = {
+                "Location": location,
                 "Temperature": temperature,
-                "Gas Emission Value": gas_emission
-            }])
-            predicted_threshold = model.predict(user_input)[0]
-        else:
-            predicted_threshold = gas_emission * 1.1
+                "Gas Emission Value": gas_emission,
+                "Threshold": float(predicted_threshold),
+                "Analog": int(analog_value),
+                "Timestamp": current_timestamp,
+                "Date": datetime.now().date().isoformat()
+            }
 
-        analog = 1 if gas_emission > predicted_threshold else 0
+            readings_collection.insert_one(new_entry)
+            save_mean_values()
+            flash('Prediction saved successfully!', 'success')
 
-        st.success(f"Prediction Results:\nThreshold: {predicted_threshold:.2f}\nAnalog Value: {analog}")
+        except Exception as e:
+            flash(f'Error: {str(e)}', 'danger')
 
-        current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        new_entry = {
-            "Location": location,
-            "Temperature": temperature,
-            "Gas Emission Value": gas_emission,
-            "Threshold": float(predicted_threshold),
-            "Analog": int(analog),
-            "Timestamp": current_timestamp,
-            "Date": datetime.now().date().isoformat()
-        }
+        return render_template('index.html',
+                               plot_paths=plot_paths,
+                               mae=mae,
+                               rmse=rmse,
+                               model_trained=model is not None,
+                               predicted_threshold=round(predicted_threshold, 2),
+                               analog_value=analog_value,
+                               location=location,
+                               
+                               temperature=temperature,
+                               gas_emission=gas_emission)
 
-        readings_collection.insert_one(new_entry)
-        st.success("Data saved to MongoDB successfully!")
+    return render_template('index.html',
+                           plot_paths=plot_paths,
+                           mae=mae,
+                           rmse=rmse,
+                           model_trained=model is not None,
+                           predicted_threshold=None,
+                           analog_value=None)
 
-        save_mean_values()
-
-    except Exception as e:
-        st.error(f"Error: {e}")
+if __name__ == '__main__':
+    app.run(debug=True)
