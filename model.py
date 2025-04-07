@@ -133,6 +133,43 @@ def save_mean_values():
                 {"$set": record},
                 upsert=True
             )
+from flask import jsonify
+
+@app.route('/predict', methods=['POST'])
+def api_predict():
+    try:
+        data = request.get_json()
+        location = data.get('location', 'Unknown')
+        temperature = float(data.get('temperature', 0))
+        gas_emission = float(data.get('gas_emission', 0))
+
+        df = load_or_initialize_data()
+        label_encoder = handle_location_encoding(df)
+        model, mae, rmse = train_model(df, label_encoder)
+
+        try:
+            location_encoded = label_encoder.transform([location])[0]
+        except ValueError:
+            new_classes = list(label_encoder.classes_) + [location]
+            label_encoder.fit(new_classes)
+            location_encoded = label_encoder.transform([location])[0]
+
+        user_input = pd.DataFrame([{
+            "Location_Encoded": location_encoded,
+            "Temperature": temperature,
+            "Gas Emission Value": gas_emission
+        }])
+        predicted_threshold = model.predict(user_input)[0]
+        analog_value = 1 if gas_emission > predicted_threshold else 0
+
+        return jsonify({
+            "predicted_threshold": round(float(predicted_threshold), 2),
+            "analog": analog_value
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     df = load_or_initialize_data()
@@ -194,7 +231,6 @@ def index():
                                predicted_threshold=round(predicted_threshold, 2),
                                analog_value=analog_value,
                                location=location,
-                               
                                temperature=temperature,
                                gas_emission=gas_emission)
 
